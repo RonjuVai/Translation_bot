@@ -1,0 +1,1 @@
+worker: python translation_bot.py
