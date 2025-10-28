@@ -3,7 +3,6 @@ import logging
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from deep_translator import GoogleTranslator
-from typing import Dict
 
 # Configure logging
 logging.basicConfig(
@@ -16,94 +15,219 @@ logger = logging.getLogger(__name__)
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 
 if not BOT_TOKEN:
-    raise ValueError("❌ BOT_TOKEN environment variable not set!")
+    print("❌ ERROR: BOT_TOKEN environment variable not set!")
+    print("💡 Please set BOT_TOKEN in Railway environment variables")
+    exit(1)
 
-# Store group settings with persistence
-class GroupManager:
-    def __init__(self):
-        self.group_settings: Dict[int, bool] = {}
-        self.supported_languages = {
-            'bn': 'Bengali', 'hi': 'Hindi', 'ar': 'Arabic', 'es': 'Spanish', 
-            'fr': 'French', 'de': 'German', 'pt': 'Portuguese', 'ru': 'Russian',
-            'ja': 'Japanese', 'ko': 'Korean', 'zh': 'Chinese', 'it': 'Italian',
-            'ur': 'Urdu', 'ta': 'Tamil', 'te': 'Telugu', 'mr': 'Marathi',
-            'gu': 'Gujarati', 'pa': 'Punjabi', 'ml': 'Malayalam', 'kn': 'Kannada'
-        }
-    
-    def is_enabled(self, chat_id: int) -> bool:
-        return self.group_settings.get(chat_id, True)
-    
-    def toggle(self, chat_id: int) -> bool:
-        self.group_settings[chat_id] = not self.group_settings.get(chat_id, True)
-        return self.group_settings[chat_id]
-
-group_manager = GroupManager()
+# Simple group settings storage
+group_settings = {}
 
 class TranslationBot:
     def __init__(self):
-        self.translator = GoogleTranslator(source='auto', target='en')
-        
-    async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        self.supported_languages = {
+            'bn': 'Bengali', 'hi': 'Hindi', 'ar': 'Arabic', 'es': 'Spanish',
+            'fr': 'French', 'de': 'German', 'pt': 'Portuguese', 'ru': 'Russian',
+            'ja': 'Japanese', 'ko': 'Korean', 'zh': 'Chinese', 'it': 'Italian',
+            'ur': 'Urdu', 'ta': 'Tamil', 'te': 'Telugu', 'mr': 'Marathi'
+        }
+    
+    async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Start command handler"""
+        welcome_text = """
+🌐 **Welcome to Translation Bot!**
+
+I automatically translate non-English messages to English in groups.
+
+**Admin Commands:**
+/toggle - Enable/disable translation
+/settings - Show current settings
+/help - Get help guide
+
+**Add me to your group and make me admin to start translating!**
+        """
+        await update.message.reply_text(welcome_text)
+
+    async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Help command handler"""
+        help_text = """
+🤖 **Translation Bot Help**
+
+**How to use:**
+1. Add me to your group
+2. Make me administrator
+3. I'll auto-translate non-English messages
+
+**Commands:**
+/start - Start the bot
+/toggle - Toggle translation (admin only)
+/settings - Show settings
+/help - This message
+
+**Features:**
+• 100+ languages support
+• Auto language detection
+• Fast translation
+• Easy toggle on/off
+        """
+        await update.message.reply_text(help_text)
+
+    async def toggle_translation(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Toggle translation on/off"""
         try:
-            # Ignore if message is from bot itself
+            if update.message.chat.type not in ['group', 'supergroup']:
+                await update.message.reply_text("❌ This command works only in groups!")
+                return
+
+            # Check admin permissions
+            user = update.message.from_user
+            chat_id = update.message.chat.id
+            
+            try:
+                member = await context.bot.get_chat_member(chat_id, user.id)
+                if member.status not in ['administrator', 'creator']:
+                    await update.message.reply_text("❌ Only admins can use this command!")
+                    return
+            except Exception as e:
+                logger.error(f"Permission check failed: {e}")
+                await update.message.reply_text("❌ Error checking permissions!")
+                return
+
+            # Toggle setting
+            current = group_settings.get(chat_id, True)
+            group_settings[chat_id] = not current
+            new_status = "✅ ENABLED" if group_settings[chat_id] else "❌ DISABLED"
+            
+            await update.message.reply_text(
+                f"🔄 Translation is now **{new_status}** for this group!",
+                parse_mode='Markdown'
+            )
+            
+        except Exception as e:
+            logger.error(f"Toggle error: {e}")
+            await update.message.reply_text("❌ Command failed!")
+
+    async def show_settings(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show current settings"""
+        try:
+            if update.message.chat.type not in ['group', 'supergroup']:
+                await update.message.reply_text("❌ This command works only in groups!")
+                return
+
+            chat_id = update.message.chat.id
+            status = "✅ ENABLED" if group_settings.get(chat_id, True) else "❌ DISABLED"
+            
+            settings_text = f"""
+⚙️ **Translation Settings**
+
+**Status:** {status}
+**Target Language:** English 🇺🇸
+**Supported Languages:** 100+
+
+Use /toggle to enable/disable translation
+            """
+            await update.message.reply_text(settings_text)
+            
+        except Exception as e:
+            logger.error(f"Settings error: {e}")
+            await update.message.reply_text("❌ Command failed!")
+
+    async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle incoming messages"""
+        try:
+            # Skip if message from bot
             if update.message.from_user.is_bot:
                 return
-                
-            # Check if message is from a group
+
+            # Skip if not in group or translation disabled
             if update.message.chat.type in ['group', 'supergroup']:
                 chat_id = update.message.chat.id
-                
-                # Check if translation is enabled for this group
-                if not group_manager.is_enabled(chat_id):
+                if not group_settings.get(chat_id, True):
                     return
-                    
+
             # Get message text
-            message_text = update.message.text or update.message.caption
-            
-            # Skip if message is empty or too short
-            if not message_text or len(message_text.strip()) < 2:
-                return
-                
-            # Skip if message is a command
-            if message_text.startswith('/'):
-                return
-                
-            # Skip very long messages
-            if len(message_text) > 1000:
-                await update.message.reply_text("❌ Message too long for translation!")
+            text = update.message.text
+            if not text or len(text.strip()) < 2:
                 return
 
-            # Detect language first
+            # Skip commands
+            if text.startswith('/'):
+                return
+
+            # Skip very long messages
+            if len(text) > 500:
+                return
+
+            # Detect language
             try:
-                detected_lang = GoogleTranslator(source='auto').detect(message_text)
-                logger.info(f"Detected language: {detected_lang}")
-                
-                # If message is already in English, skip translation
-                if detected_lang == 'en':
-                    return
-                    
+                detected = GoogleTranslator(source='auto').detect(text)
+                if detected == 'en':
+                    return  # Skip English messages
             except Exception as e:
                 logger.warning(f"Language detection failed: {e}")
-                detected_lang = 'unknown'
+                detected = 'unknown'
 
-            # Translate message to English
+            # Translate message
             try:
-                translated_text = GoogleTranslator(source='auto', target='en').translate(message_text)
+                translated = GoogleTranslator(source='auto', target='en').translate(text)
                 
-                if not translated_text or translated_text == message_text:
-                    return
+                if not translated or translated == text:
+                    return  # Skip if translation failed or same
                     
             except Exception as e:
                 logger.error(f"Translation failed: {e}")
-                await update.message.reply_text("❌ Translation failed. Please try again.")
                 return
 
-            # Add original language info
-            original_lang = group_manager.supported_languages.get(detected_lang, detected_lang.upper())
-            
             # Prepare response
+            lang_name = self.supported_languages.get(detected, detected.upper())
             response = f"**Translation** 🌐\n\n"
-            response += f"**From {original_lang} to English:**\n"
+            response += f"**{lang_name} → English:**\n"
+            response += f"`{translated}`\n\n"
+            response += f"_Original:_ `{text}`"
+
+            await update.message.reply_text(response, parse_mode='Markdown')
+
+        except Exception as e:
+            logger.error(f"Message handling error: {e}")
+
+def main():
+    """Main function to start the bot"""
+    try:
+        print("🚀 Starting Translation Bot...")
+        
+        # Check token
+        if not BOT_TOKEN:
+            print("❌ ERROR: BOT_TOKEN not found!")
+            return
+
+        # Create bot instance
+        bot = TranslationBot()
+        
+        # Create application
+        application = Application.builder().token(BOT_TOKEN).build()
+
+        # Add command handlers
+        application.add_handler(CommandHandler("start", bot.start))
+        application.add_handler(CommandHandler("help", bot.help_command))
+        application.add_handler(CommandHandler("toggle", bot.toggle_translation))
+        application.add_handler(CommandHandler("settings", bot.show_settings))
+        
+        # Add message handler (MUST be after command handlers)
+        application.add_handler(MessageHandler(
+            filters.TEXT & ~filters.COMMAND, 
+            bot.handle_message
+        ))
+
+        # Start polling
+        print("✅ Bot is running successfully!")
+        print("🤖 Waiting for messages...")
+        application.run_polling(drop_pending_updates=True)
+        
+    except Exception as e:
+        logger.error(f"❌ Bot crashed: {e}")
+        print(f"❌ Fatal error: {e}")
+
+if __name__ == '__main__':
+    main()            response += f"**From {original_lang} to English:**\n"
             response += f"`{translated_text}`\n\n"
             response += f"*Original:* `{message_text[:200]}{'...' if len(message_text) > 200 else ''}`"
             
